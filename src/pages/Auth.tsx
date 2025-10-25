@@ -8,6 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useAuth } from '@/contexts/AuthContext';
+import { signInWithPopup, GoogleAuthProvider as FirebaseGoogleAuthProvider } from 'firebase/auth';
+import { auth, googleProvider } from '../firebase';
 import { GraduationCap } from "lucide-react";
 
 const Auth = () => {
@@ -102,8 +104,22 @@ const Auth = () => {
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data?.error || 'Signup failed');
-      toast.success('OTP sent to your email');
-      setSignupPhase('otp');
+      // If backend returned a token (signup created & verified user), log in immediately
+      if (data?.token) {
+        setUser(data.user || null, data.token || null);
+        toast.success('Account created and signed in');
+        navigate('/dashboard');
+        return;
+      }
+      // If backend returned a dev OTP (older flow) show it so local testing can proceed
+      if (data?.otp) {
+        setSignupPhase('otp');
+        setSignupOtp(data.otp); // pre-fill OTP field to simplify testing
+        toast.success(`Dev OTP (use this to verify): ${data.otp}`);
+      } else {
+        toast.success('OTP sent to your email');
+        setSignupPhase('otp');
+      }
     } catch (err: any) {
       console.error('Signup error', err);
       toast.error(err?.message || 'Signup failed');
@@ -170,11 +186,33 @@ const Auth = () => {
                 <div id="g_id_signin" />
                 <div className="text-sm text-center mt-2">or</div>
                 <div className="flex justify-center mt-2">
-                  <Button variant="outline" onClick={() => {
-                    const g = (window as any).google;
-                    if (g && g.accounts && g.accounts.id) g.accounts.id.prompt();
-                    else toast.error('Google SDK not loaded');
-                  }}>Sign in with Google</Button>
+                    <Button variant="outline" onClick={async () => {
+                      // Try Firebase popup flow first to obtain a Firebase ID token
+                      try {
+                        const result = await signInWithPopup(auth, googleProvider as any);
+                        // obtain Firebase ID token (this is what firebase-admin verifies)
+                        const firebaseIdToken = await (result.user?.getIdToken ? result.user.getIdToken() : null);
+                        if (!firebaseIdToken) throw new Error('No Firebase ID token returned from popup');
+
+                        const r = await fetch(`${API_BASE}/api/auth/firebase-login`, {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ idToken: firebaseIdToken })
+                        });
+                        const data = await r.json();
+                        if (!r.ok) throw new Error(data?.error || 'Auth failed');
+                        setUser(data.user || null, data.token || null);
+                        toast.success('Signed in');
+                        navigate('/dashboard');
+                        return;
+                      } catch (e) {
+                        console.warn('Firebase popup sign-in failed, falling back to GSI:', e);
+                      }
+
+                      // fallback to Google Identity Services prompt (if available)
+                      const g = (window as any).google;
+                      if (g && g.accounts && g.accounts.id) g.accounts.id.prompt();
+                      else toast.error('Google SDK not loaded');
+                    }}>Sign in with Google</Button>
                 </div>
               </div>
             </TabsContent>

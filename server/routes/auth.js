@@ -5,13 +5,16 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const authMiddleware = require('../middleware/auth');
 const bcrypt = require('bcryptjs');
-const nodemailer = require('nodemailer');
+// Removed nodemailer/SMPP usage - using Firebase for authentication/authorization
+const admin = require('firebase-admin');
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const JWT_SECRET = process.env.JWT_SECRET || 'replace-me-change-in-prod';
 const ALLOWED_DOMAIN = process.env.ALLOWED_EMAIL_DOMAIN || 'klh.edu.in';
-const GMAIL_USER = process.env.GMAIL_USER || '';
-const GMAIL_PASS = process.env.GMAIL_PASS || '';
+// Gmail SMTP removed; backend will no longer send OTP emails.
+// Firebase admin service account options
+const FIREBASE_SERVICE_ACCOUNT = process.env.FIREBASE_SERVICE_ACCOUNT || '';
+const FIREBASE_SERVICE_ACCOUNT_PATH = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || '';
 
 if (!GOOGLE_CLIENT_ID) {
   console.warn('GOOGLE_CLIENT_ID not set — Google ID token verification will fail until set in .env');
@@ -65,6 +68,52 @@ router.post('/google', async (req, res) => {
   }
 });
 
+// POST /api/auth/firebase-login
+// body: { idToken }
+router.post('/firebase-login', async (req, res) => {
+  try {
+    const { idToken } = req.body || {};
+    if (!idToken) return res.status(400).json({ error: 'Missing idToken' });
+
+    // verify Firebase ID token
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    if (!decoded) return res.status(400).json({ error: 'Invalid id token' });
+
+    const email = decoded.email;
+    const domain = (email || '').split('@')[1] || '';
+    if (!domain || !domain.endsWith(ALLOWED_DOMAIN)) {
+      return res.status(403).json({ error: 'Only college emails are allowed to register' });
+    }
+
+    // find or create user (mark as verified)
+    let user = await User.findOne({ email });
+    if (!user) {
+      user = new User({
+        firebaseUid: decoded.uid,
+        email,
+        name: decoded.name || '',
+        picture: decoded.picture || '',
+        role: 'student',
+        isVerified: true,
+      });
+      await user.save();
+    } else {
+      let changed = false;
+      if (!user.firebaseUid && decoded.uid) { user.firebaseUid = decoded.uid; changed = true; }
+      if (decoded.picture && user.picture !== decoded.picture) { user.picture = decoded.picture; changed = true; }
+      if (decoded.name && user.name !== decoded.name) { user.name = decoded.name; changed = true; }
+      if (!user.isVerified) { user.isVerified = true; changed = true; }
+      if (changed) await user.save();
+    }
+
+    const token = jwt.sign({ userId: user._id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+    return res.json({ token, user });
+  } catch (err) {
+    console.error('Firebase auth error', err);
+    return res.status(500).json({ error: 'Firebase authentication failed' });
+  }
+});
+
 // GET /api/auth/me
 router.get('/me', authMiddleware, async (req, res) => {
   const user = req.user;
@@ -72,18 +121,29 @@ router.get('/me', authMiddleware, async (req, res) => {
   return res.json({ user });
 });
 
-if (!GMAIL_USER || !GMAIL_PASS) {
-  console.warn('GMAIL_USER or GMAIL_PASS not set — email OTP delivery will not work until set in .env');
+
+// Initialize firebase-admin
+try {
+  if (FIREBASE_SERVICE_ACCOUNT) {
+    const svc = JSON.parse(FIREBASE_SERVICE_ACCOUNT);
+    admin.initializeApp({ credential: admin.credential.cert(svc) });
+    console.log('firebase-admin initialized from FIREBASE_SERVICE_ACCOUNT');
+  } else if (FIREBASE_SERVICE_ACCOUNT_PATH) {
+    const svc = require(FIREBASE_SERVICE_ACCOUNT_PATH);
+    admin.initializeApp({ credential: admin.credential.cert(svc) });
+    console.log('firebase-admin initialized from FIREBASE_SERVICE_ACCOUNT_PATH');
+  } else {
+    admin.initializeApp();
+    console.log('firebase-admin initialized with application default credentials');
+  }
+} catch (e) {
+  console.warn('firebase-admin initialization failed:', e && e.message ? e.message : e);
 }
 
 // nodemailer transporter using Gmail SMTP (app password recommended)
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: GMAIL_USER,
-    pass: GMAIL_PASS,
-  }
-});
+// Use explicit host/port so errors are more obvious and configuration works across environments.
+// SMTP removed — we no longer attempt to send OTP emails from the backend.
+console.log('SMTP configuration removed: backend will not send OTP emails. Use Firebase for authentication/authorization.');
 
 // POST /api/auth/signup
 // body: { email, name, password }
@@ -96,65 +156,22 @@ router.post('/signup', async (req, res) => {
     if (user && user.isVerified) return res.status(409).json({ error: 'User already exists' });
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const otpCode = (Math.floor(100000 + Math.random() * 900000)).toString();
-    const otpExpires = new Date(Date.now() + 1000 * 60 * 15); // 15 minutes
 
     if (!user) {
-      user = new User({ email, name, passwordHash, isVerified: false, otpCode, otpExpires });
+      user = new User({ email, name, passwordHash, isVerified: true });
     } else {
       user.passwordHash = passwordHash;
-      user.otpCode = otpCode;
-      user.otpExpires = otpExpires;
-      user.isVerified = false;
+      user.isVerified = true;
       if (name) user.name = name;
     }
     await user.save();
 
-    // send OTP via email (if configured)
-    let devOtp = null;
-    if (GMAIL_USER && GMAIL_PASS) {
-      const mail = {
-        from: GMAIL_USER,
-        to: email,
-        subject: 'Your Campus OTP Code',
-        text: `Your verification code is ${otpCode}. It expires in 15 minutes.`,
-      };
-      transporter.sendMail(mail).catch((e) => console.error('OTP email error', e));
-    } else {
-      // in dev mode (no SMTP) return OTP in response to simplify testing
-      devOtp = otpCode;
-    }
-
-    return res.status(200).json({ ok: true, message: 'OTP sent to email', otp: devOtp });
+    // Since SMTP has been removed, mark user as verified and return a JWT so the client can proceed.
+    const token = jwt.sign({ userId: user._id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+    return res.status(200).json({ token, user });
   } catch (err) {
     console.error('Signup error', err);
     return res.status(500).json({ error: 'Signup failed' });
-  }
-});
-
-// POST /api/auth/verify-otp
-// body: { email, otp }
-router.post('/verify-otp', async (req, res) => {
-  try {
-    const { email, otp } = req.body || {};
-    if (!email || !otp) return res.status(400).json({ error: 'Missing email or otp' });
-    const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ error: 'Not found' });
-    if (user.isVerified) return res.status(400).json({ error: 'User already verified' });
-    if (!user.otpCode || !user.otpExpires) return res.status(400).json({ error: 'No OTP pending' });
-    if (new Date() > new Date(user.otpExpires)) return res.status(400).json({ error: 'OTP expired' });
-    if (String(otp).trim() !== String(user.otpCode).trim()) return res.status(400).json({ error: 'Invalid OTP' });
-
-    user.isVerified = true;
-    user.otpCode = undefined;
-    user.otpExpires = undefined;
-    await user.save();
-
-    const token = jwt.sign({ userId: user._id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
-    return res.json({ token, user });
-  } catch (err) {
-    console.error('Verify OTP error', err);
-    return res.status(500).json({ error: 'OTP verification failed' });
   }
 });
 

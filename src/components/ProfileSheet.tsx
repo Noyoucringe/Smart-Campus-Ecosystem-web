@@ -27,11 +27,20 @@ import { Textarea } from "@/components/ui/textarea";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useEffect, useMemo, useState } from "react";
+import { useAuth } from '@/contexts/AuthContext';
+import { useTheme } from 'next-themes';
+import { Switch } from '@/components/ui/switch';
 
 export function ProfileSheet() {
   const navigate = useNavigate();
+  const { logout } = useAuth();
+  const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => setMounted(true), []);
 
   const handleLogout = () => {
+    logout();
     toast.success("Logged out successfully");
     navigate("/auth");
   };
@@ -67,6 +76,8 @@ export function ProfileSheet() {
   const [newInterest, setNewInterest] = useState("");
   const [newSocialLabel, setNewSocialLabel] = useState("");
   const [newSocialUrl, setNewSocialUrl] = useState("");
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsName, setSettingsName] = useState(profile.name);
 
   // Load from localStorage on mount
   useEffect(() => {
@@ -92,6 +103,10 @@ export function ProfileSheet() {
     setEditing(true);
   };
 
+  useEffect(() => {
+    setSettingsName(profile.name);
+  }, [profile.name]);
+
   const cancelEdit = () => {
     setDraft(profile);
     setEditing(false);
@@ -105,6 +120,13 @@ export function ProfileSheet() {
     localStorage.setItem("campus_profile", JSON.stringify(draft));
     setEditing(false);
     toast.success("Profile saved");
+  };
+
+  const saveSettings = () => {
+    setProfile((p) => ({ ...p, name: settingsName }));
+    const updated = { ...profile, name: settingsName };
+    localStorage.setItem("campus_profile", JSON.stringify(updated));
+    toast.success('Settings saved');
   };
 
   const addInterest = () => {
@@ -321,9 +343,34 @@ export function ProfileSheet() {
 
           {/* Actions */}
           <div className="space-y-2">
-            <Button variant="outline" className="w-full justify-start gap-2">
+            <Button variant="outline" className="w-full justify-start gap-2" onClick={() => setShowSettings((s) => !s)}>
               <Settings className="w-4 h-4" /> Account Settings
             </Button>
+            {showSettings && (
+              <div className="p-3 rounded-lg bg-muted/50 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Dark Mode</p>
+                    <p className="text-sm text-muted-foreground">Toggle between light and dark themes</p>
+                  </div>
+                  {/* avoid SSR mismatch by only rendering switch after mount */}
+                  {mounted ? (
+                    <Switch checked={theme === 'dark'} onCheckedChange={(v: boolean) => setTheme(v ? 'dark' : 'light')} />
+                  ) : (
+                    <Switch checked={false} onCheckedChange={() => {}} />
+                  )}
+                </div>
+
+                <div>
+                  <p className="text-xs text-muted-foreground">Display name</p>
+                  <Input value={settingsName} onChange={(e) => setSettingsName(e.target.value)} />
+                  <div className="flex gap-2 justify-end mt-2">
+                    <Button size="sm" onClick={saveSettings}><Check className="w-4 h-4" /> Save</Button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <Button
               variant="outline"
               className="w-full justify-start gap-2 text-destructive hover:text-destructive"
