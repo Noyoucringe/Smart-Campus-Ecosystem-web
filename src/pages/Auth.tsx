@@ -15,7 +15,7 @@ const Auth = () => {
   const [role, setRole] = useState<string>("student");
   const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'http://localhost:3001';
   const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) || '';
-  const { setUser } = useAuth();
+  const { setUser } = useAuth(); // only one declaration here
 
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -26,8 +26,6 @@ const Auth = () => {
   const [signupPassword, setSignupPassword] = useState('');
   const [signupPhase, setSignupPhase] = useState<'form'|'otp'>('form');
   const [signupOtp, setSignupOtp] = useState('');
-
-  const { setUser } = useAuth();
 
   useEffect(() => {
     // inject Google Identity Services script
@@ -48,28 +46,25 @@ const Auth = () => {
         g.accounts.id.initialize({
           client_id: GOOGLE_CLIENT_ID,
           callback: async (resp: any) => {
-            // resp.credential is the ID token
             const idToken = resp?.credential;
             if (!idToken) return;
-              try {
-                const r = await fetch(`${API_BASE}/api/auth/google`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ idToken }),
-                });
-                const data = await r.json();
-                if (!r.ok) throw new Error(data?.error || 'Auth failed');
-                // persist and update AuthContext so UI updates immediately
-                setUser(data.user || null, data.token || null);
-                toast.success('Signed in');
-                navigate('/dashboard');
-              } catch (err: any) {
-                console.error('Google sign-in failed', err);
-                toast.error(err?.message || 'Google sign-in failed');
-              }
+            try {
+              const r = await fetch(`${API_BASE}/api/auth/google`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ idToken }),
+              });
+              const data = await r.json();
+              if (!r.ok) throw new Error(data?.error || 'Auth failed');
+              setUser(data.user || null, data.token || null);
+              toast.success('Signed in');
+              navigate('/dashboard');
+            } catch (err: any) {
+              console.error('Google sign-in failed', err);
+              toast.error(err?.message || 'Google sign-in failed');
+            }
           }
         });
-        // render a button into the container if present
         const container = document.getElementById('g_id_signin');
         if (container) {
           g.accounts.id.renderButton(container, { theme: 'outline', size: 'large' });
@@ -135,7 +130,6 @@ const Auth = () => {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
-      {/* Animated Background */}
       <div className="absolute inset-0 bg-gradient-mesh opacity-40 animate-pulse" style={{ animationDuration: '8s' }} />
       
       <Card className="w-full max-w-md relative z-10 shadow-glow">
